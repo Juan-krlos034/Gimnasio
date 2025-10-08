@@ -1,0 +1,211 @@
+DROP TABLE IF EXISTS Reservas;
+DROP TABLE IF EXISTS Clases;
+DROP TABLE IF EXISTS Clientes;
+DROP TABLE IF EXISTS Instructores;
+DROP TABLE IF EXISTS Sedes;
+
+CREATE TABLE Sedes (
+    id_sede INT PRIMARY KEY AUTO_INCREMENT,
+    nombre VARCHAR(100) NOT NULL,
+    direccion VARCHAR(150) NOT NULL
+);
+
+CREATE TABLE Instructores (
+    id_instructor INT PRIMARY KEY AUTO_INCREMENT,
+    nombre VARCHAR(100) NOT NULL,
+    especialidad VARCHAR(80),
+    correo VARCHAR(120) UNIQUE NOT NULL
+);
+
+CREATE TABLE Clientes (
+    id_cliente INT PRIMARY KEY AUTO_INCREMENT,
+    nombre VARCHAR(100) NOT NULL,
+    correo VARCHAR(120) UNIQUE NOT NULL,
+    membresia ENUM('BASICA','PREMIUM') NOT NULL DEFAULT 'BASICA'
+);
+
+CREATE TABLE Clases (
+    id_clase INT PRIMARY KEY AUTO_INCREMENT,
+    id_sede INT NOT NULL,
+    id_instructor INT NOT NULL,
+    nombre VARCHAR(100) NOT NULL,
+    cupo INT NOT NULL CHECK (cupo > 0),
+    fecha_hora DATETIME NOT NULL,
+    duracion_min INT NOT NULL CHECK (duracion_min > 0),
+    FOREIGN KEY (id_sede) REFERENCES Sedes(id_sede),
+    FOREIGN KEY (id_instructor) REFERENCES Instructores(id_instructor)
+);
+
+CREATE TABLE Reservas (
+    id_reserva INT PRIMARY KEY AUTO_INCREMENT,
+    id_cliente INT NOT NULL,
+    id_clase INT NOT NULL,
+    fecha_reserva DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    estado ENUM('RESERVADA','CANCELADA','ASISTIDA') NOT NULL DEFAULT 'RESERVADA',
+    FOREIGN KEY (id_cliente) REFERENCES Clientes(id_cliente),
+    FOREIGN KEY (id_clase) REFERENCES Clases(id_clase),
+    UNIQUE KEY uq_reserva_unica (id_cliente, id_clase) 
+);
+
+INSERT INTO Sedes (nombre, direccion) VALUES
+('Centro', 'Calle 10 #5-20'),
+('Norte', 'Av. 3N #45-12'),
+('Sur', 'Cra. 80 #30-55'),
+('Occidente', 'Transv. 5 #72-10'),
+('Oriente', 'Calle 50 #12-34');
+
+INSERT INTO Instructores (nombre, especialidad, correo) VALUES
+('Laura Díaz', 'Spinning', 'laura.diaz@gym.com'), -- id_instructor = 1
+('Carlos Rojas', 'CrossFit', 'carlos.rojas@gym.com'), -- id_instructor = 2
+('Andrea Méndez', 'Yoga', 'andrea.mendez@gym.com'),
+('Diego Pardo', 'HIIT', 'diego.pardo@gym.com'),
+('Sofía Martínez', 'Pilates', 'sofia.martinez@gym.com');
+
+INSERT INTO Clientes (nombre, correo, membresia) VALUES
+('Juan Pérez', 'juan.perez@correo.com', 'BASICA'), -- id_cliente = 1
+('María López', 'maria.lopez@correo.com', 'PREMIUM'), -- id_cliente = 2
+('Pedro Gómez', 'pedro.gomez@correo.com', 'BASICA'), -- id_cliente = 3
+('Ana Torres', 'ana.torres@correo.com', 'PREMIUM'), -- id_cliente = 4
+('Luis Fernández', 'luis.fernandez@correo.com', 'BASICA'); -- id_cliente = 5
+
+INSERT INTO Clases (id_sede, id_instructor, nombre, cupo, fecha_hora, duracion_min) VALUES
+(1, 1, 'Spinning AM', 10, '2025-10-10 07:00:00', 60), -- id_clase = 1
+(2, 2, 'CrossFit Power', 12, '2025-10-10 18:00:00', 50), -- id_clase = 2
+(3, 3, 'Yoga Flow', 15, '2025-10-11 08:00:00', 70), -- id_clase = 3
+(4, 4, 'HIIT Express', 8,  '2025-10-11 19:00:00', 30), -- id_clase = 4
+(5, 5, 'Pilates Core', 10, '2025-10-12 06:30:00', 55);
+
+INSERT INTO Reservas (id_cliente, id_clase, estado) VALUES
+(1, 1, 'RESERVADA'), -- id_reserva = 1
+(2, 1, 'ASISTIDA'),  -- id_reserva = 2
+(3, 2, 'RESERVADA'), -- id_reserva = 3
+(4, 3, 'RESERVADA'), -- id_reserva = 4
+(5, 4, 'CANCELADA'); -- id_reserva = 5
+
+
+
+CREATE VIEW vw_clases_con_aforo AS
+SELECT
+    C.id_clase, C.nombre AS nombre_clase, S.nombre AS nombre_sede, I.nombre AS nombre_instructor,
+    C.cupo AS cupo_maximo,
+    COUNT(CASE WHEN R.estado IN ('RESERVADA', 'ASISTIDA') THEN R.id_reserva END) AS reservas_ocupadas,
+    (C.cupo - COUNT(CASE WHEN R.estado IN ('RESERVADA', 'ASISTIDA') THEN R.id_reserva END)) AS cupos_disponibles
+FROM Clases C
+JOIN Sedes S ON C.id_sede = S.id_sede
+JOIN Instructores I ON C.id_instructor = I.id_instructor
+LEFT JOIN Reservas R ON C.id_clase = R.id_clase
+GROUP BY C.id_clase, C.nombre, S.nombre, I.nombre, C.cupo;
+
+
+CREATE VIEW vw_resumen_reservas_cliente AS
+SELECT
+    Cl.id_cliente, Cl.nombre AS nombre_cliente, Cl.membresia,
+    COUNT(R.id_reserva) AS total_reservas,
+    SUM(CASE WHEN R.estado = 'RESERVADA' THEN 1 ELSE 0 END) AS reservadas,
+    SUM(CASE WHEN R.estado = 'CANCELADA' THEN 1 ELSE 0 END) AS canceladas,
+    SUM(CASE WHEN R.estado = 'ASISTIDA' THEN 1 ELSE 0 END) AS asistidas
+FROM Clientes Cl
+LEFT JOIN Reservas R ON Cl.id_cliente = R.id_cliente
+GROUP BY Cl.id_cliente, Cl.nombre, Cl.membresia;
+
+DELIMITER $$
+
+CREATE PROCEDURE sp_reservar_clase (
+    IN p_id_cliente INT, IN p_id_clase INT, OUT p_cupos_restantes INT
+)
+BEGIN
+    DECLARE v_cupo_max INT;
+    DECLARE v_reservas_activas INT;
+
+    SELECT C.cupo, COUNT(R.id_reserva)
+    INTO v_cupo_max, v_reservas_activas
+    FROM Clases C
+    LEFT JOIN Reservas R ON C.id_clase = R.id_clase AND R.estado IN ('RESERVADA', 'ASISTIDA')
+    WHERE C.id_clase = p_id_clase GROUP BY C.cupo;
+
+    IF v_reservas_activas < v_cupo_max THEN
+        INSERT INTO Reservas (id_cliente, id_clase, estado)
+        VALUES (p_id_cliente, p_id_clase, 'RESERVADA');
+        SET p_cupos_restantes = v_cupo_max - (v_reservas_activas + 1);
+    ELSE
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La clase está llena. No se puede realizar la reserva.';
+        SET p_cupos_restantes = 0;
+    END IF;
+END$$
+
+CREATE PROCEDURE sp_cancelar_reserva (
+    IN p_id_reserva INT
+)
+BEGIN
+    UPDATE Reservas
+    SET estado = 'CANCELADA'
+    WHERE id_reserva = p_id_reserva
+      AND estado != 'CANCELADA';
+END$$
+
+CREATE PROCEDURE sp_porcentaje_asistencia_instructor (
+    IN p_id_instructor INT, OUT p_porcentaje_asistencia DECIMAL(5, 2)
+)
+BEGIN
+    DECLARE v_total_reservas INT;
+    DECLARE v_asistidas INT;
+
+    SELECT
+        COUNT(R.id_reserva),
+        SUM(CASE WHEN R.estado = 'ASISTIDA' THEN 1 ELSE 0 END)
+    INTO v_total_reservas, v_asistidas
+    FROM Reservas R
+    JOIN Clases C ON R.id_clase = C.id_clase
+    WHERE C.id_instructor = p_id_instructor AND R.estado != 'CANCELADA';
+
+    IF v_total_reservas > 0 THEN
+        SET p_porcentaje_asistencia = (v_asistidas / v_total_reservas) * 100;
+    ELSE
+        SET p_porcentaje_asistencia = 0.00;
+    END IF;
+END$$
+
+DELIMITER ;
+
+SET @cupos_restantes = 0;
+SELECT '--- E1.1: RESERVA EXITOSA (Cliente 3, Clase 1) ---' AS EJERCICIO;
+CALL sp_reservar_clase(3, 1, @cupos_restantes);
+SELECT @cupos_restantes AS CuposRestantes;
+
+SELECT '--- E1.2: RESERVA DUPLICADA (Debe generar error) ---' AS EJERCICIO;
+
+
+SELECT '--- E2.1: AFORO ANTES DE CANCELAR (Clase 1) ---' AS EJERCICIO;
+SELECT cupos_disponibles FROM vw_clases_con_aforo WHERE id_clase = 1;
+
+CALL sp_cancelar_reserva(1); -- Cancelamos id_reserva = 1 (Cliente 1, Clase 1)
+
+SELECT '--- E2.2: AFORO DESPUÉS DE CANCELAR (Clase 1, debe aumentar) ---' AS EJERCICIO;
+SELECT cupos_disponibles FROM vw_clases_con_aforo WHERE id_clase = 1;
+
+
+SET @porcentaje_asistencia = 0;
+
+SELECT '--- E3.1: PORCENTAJE INICIAL (Instructor 1) ---' AS EJERCICIO;
+CALL sp_porcentaje_asistencia_instructor(1, @porcentaje_asistencia);
+SELECT @porcentaje_asistencia AS PorcentajeInicial;
+
+
+UPDATE Reservas SET estado = 'ASISTIDA' WHERE id_cliente = 3 AND id_clase = 1;
+
+SELECT '--- E3.2: PORCENTAJE FINAL (Instructor 1, después de asistencia) ---' AS EJERCICIO;
+CALL sp_porcentaje_asistencia_instructor(1, @porcentaje_asistencia);
+SELECT @porcentaje_asistencia AS PorcentajeFinal;
+
+
+SELECT '--- E4: CLASES ORDENADAS POR MENOR CUPO DISPONIBLE ---' AS EJERCICIO;
+SELECT nombre_clase, nombre_instructor, cupos_disponibles
+FROM vw_clases_con_aforo
+ORDER BY cupos_disponibles ASC;
+
+
+SELECT '--- E5: RESUMEN DE CANCELACIONES (Clientes PREMIUM) ---' AS EJERCICIO;
+SELECT nombre_cliente, total_reservas, canceladas
+FROM vw_resumen_reservas_cliente
+WHERE membresia = 'PREMIUM'
+ORDER BY canceladas DESC;
